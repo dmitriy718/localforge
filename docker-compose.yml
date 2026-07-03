@@ -1,0 +1,13 @@
+services:
+  localforge:
+    image: localforge:0.1.0
+    build:
+      context: .
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      OLLAMA_HOST: http://host.docker.internal:11434
+      LOCALFORGE_SKIP_SETUP: "1"
+    command: ["doctor", "--config", "/workspace/localforge.yaml"]

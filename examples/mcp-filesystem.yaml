@@ -1,0 +1,28 @@
+workspace: .
+runs_dir: runs
+projects_dir: projects
+max_iterations: 30
+
+backend:
+  provider: ollama
+  # Example model. Set this to an installed Ollama model on your machine.
+  model: qwen2.5-coder:14b
+  ollama_url: http://127.0.0.1:11434
+  temperature: 0.2
+  max_tokens: 4096
+  force_json: false
+
+tools:
+  allow_shell: true
+  allow_file_write: true
+  allow_network_fetch: false
+  command_timeout_seconds: 120
+  max_output_chars: 30000
+  max_file_read_chars: 200000
+
+mcp_servers:
+  - name: filesystem
+    enabled: true
+    description: Local filesystem MCP access scoped to this workspace.
+    command: ["npx", "-y", "@modelcontextprotocol/server-filesystem@latest", "${WORKSPACE}"]
+    env: {}

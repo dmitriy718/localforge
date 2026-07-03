@@ -1,0 +1,105 @@
+# LocalForge default local-first configuration.
+workspace: .
+runs_dir: runs
+projects_dir: projects
+max_iterations: 30
+
+backend:
+  provider: ollama
+  model: hf.co/mradermacher/DeepSeek-R1-Distill-Qwen-14B-abliterated-i1-GGUF:Q4_K_M
+  ollama_url: http://127.0.0.1:11434
+  llama_cpp_binary: llama-cli
+  llama_cpp_model_path:
+  temperature: 0.2
+  max_tokens: 16384
+  request_timeout_seconds: 300
+  force_json: false
+  heartbeat_seconds: 10
+
+tools:
+  allow_shell: true
+  allow_file_write: true
+  allow_network_fetch: true
+  command_timeout_seconds: 120
+  max_output_chars: 30000
+  max_file_read_chars: 200000
+
+mcp_servers:
+  - name: context7
+    enabled: true
+    description: Live, version-aware library documentation and code examples.
+    command: ["npx", "-y", "@upstash/context7-mcp@latest"]
+    env: {}
+
+  - name: playwright
+    enabled: true
+    description: Browser automation, localhost UI inspection, console logs, and E2E workflows.
+    command: ["npx", "-y", "@playwright/mcp@latest"]
+    env: {}
+
+  - name: github
+    enabled: true
+    description: Official GitHub MCP for repositories, issues, pull requests, Actions, and releases.
+    command:
+      - docker
+      - run
+      - -i
+      - --rm
+      - -e
+      - GITHUB_PERSONAL_ACCESS_TOKEN
+      - -e
+      - GITHUB_TOOLSETS=repos,issues,pull_requests,actions,code_security
+      - ghcr.io/github/github-mcp-server
+    env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_PERSONAL_ACCESS_TOKEN}"
+    required_env: ["GITHUB_PERSONAL_ACCESS_TOKEN"]
+
+  - name: supabase
+    enabled: false
+    description: Supabase backend orchestration for development projects.
+    command: ["npx", "-y", "@supabase/mcp-server-supabase@latest"]
+    env:
+      SUPABASE_ACCESS_TOKEN: "${SUPABASE_ACCESS_TOKEN}"
+    required_env: ["SUPABASE_ACCESS_TOKEN"]
+
+  - name: brave_search
+    enabled: false
+    description: Brave Search API web search for live troubleshooting and research.
+    command: ["npx", "-y", "@modelcontextprotocol/server-brave-search@latest"]
+    env:
+      BRAVE_API_KEY: "${BRAVE_API_KEY}"
+    required_env: ["BRAVE_API_KEY"]
+
+  - name: filesystem
+    enabled: true
+    description: Local filesystem MCP access scoped to this workspace.
+    command: ["npx", "-y", "@modelcontextprotocol/server-filesystem@latest", "${WORKSPACE}"]
+    env: {}
+
+  - name: shadcn
+    enabled: true
+    description: shadcn registry browsing and component installation.
+    command: ["npx", "-y", "shadcn@latest", "mcp"]
+    env: {}
+
+  - name: neon
+    enabled: false
+    description: Neon Postgres project, branch, schema, and query management.
+    command: ["npx", "-y", "@neondatabase/mcp-server-neon@latest"]
+    env:
+      NEON_API_KEY: "${NEON_API_KEY}"
+    required_env: ["NEON_API_KEY"]
+
+  - name: firecrawl
+    enabled: false
+    description: Firecrawl web scraping, crawling, and Markdown extraction.
+    command: ["npx", "-y", "firecrawl-mcp@latest"]
+    env:
+      FIRECRAWL_API_KEY: "${FIRECRAWL_API_KEY}"
+    required_env: ["FIRECRAWL_API_KEY"]
+
+  - name: sequential_thinking
+    enabled: true
+    description: Structured sequential reasoning for complex debugging and architecture work.
+    command: ["npx", "-y", "@modelcontextprotocol/server-sequential-thinking@latest"]
+    env: {}
