@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="LocalForge turns local models into auditable software-building operators with real tools, MCP integrations, verification gates, and run artifacts."
+    />
+    <meta name="theme-color" content="#06110d" />
+    <title>LocalForge | Local-first autonomous build harness</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <canvas id="signal-canvas" aria-hidden="true"></canvas>
+
+    <header class="topbar">
+      <a class="brand" href="#top" aria-label="LocalForge home">
+        <span class="brand-mark">LF</span>
+        <span>localforge</span>
+      </a>
+      <nav class="nav" aria-label="Page sections">
+        <a href="#demo">demo</a>
+        <a href="#tools">tools</a>
+        <a href="#audit">audit</a>
+        <a href="#deploy">deploy</a>
+      </nav>
+      <a class="repo-link" href="https://github.com/dmitriy718/localforge">github</a>
+    </header>
+
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="terminal-shell hero-terminal" data-tilt>
+          <div class="terminal-bar">
+            <span class="dot red"></span>
+            <span class="dot amber"></span>
+            <span class="dot green"></span>
+            <span class="window-title">dima@localforge:~/workspace</span>
+          </div>
+          <div class="terminal-body">
+            <p class="eyebrow">$ localforge run --audit --verify</p>
+            <h1 id="hero-title">Local models. Real tools. Proof in the transcript.</h1>
+            <p class="hero-copy">
+              LocalForge is an autonomous build harness for downloaded models. It gives Ollama or
+              llama.cpp a controlled tool manifest, lets it work inside your machine, and records
+              every model response, tool call, verification check, and final report.
+            </p>
+            <div class="command-line" aria-label="Animated LocalForge command">
+              <span class="prompt">localforge$</span>
+              <span id="typed-command"></span>
+              <span class="cursor" aria-hidden="true"></span>
+            </div>
+            <div class="hero-actions" aria-label="Primary actions">
+              <a class="button primary" href="#demo">run demo</a>
+              <a class="button ghost" href="https://github.com/dmitriy718/localforge">view source</a>
+            </div>
+          </div>
+        </div>
+
+        <aside class="status-panel" aria-label="LocalForge run status">
+          <div class="status-row">
+            <span>backend</span>
+            <strong>ollama / llama.cpp</strong>
+          </div>
+          <div class="status-row">
+            <span>tools</span>
+            <strong>shell + files + MCP</strong>
+          </div>
+          <div class="status-row">
+            <span>artifacts</span>
+            <strong>events.jsonl + transcript.json</strong>
+          </div>
+          <div class="health-meter" aria-label="Verification gate animation">
+            <span style="--i: 1"></span>
+            <span style="--i: 2"></span>
+            <span style="--i: 3"></span>
+            <span style="--i: 4"></span>
+            <span style="--i: 5"></span>
+            <span style="--i: 6"></span>
+          </div>
+        </aside>
+      </section>
+
+      <section id="demo" class="section split" aria-labelledby="demo-title">
+        <div>
+          <p class="eyebrow">$ replay sample run</p>
+          <h2 id="demo-title">A build loop you can inspect.</h2>
+          <p>
+            The interface is built around operational truth: inspect first, mutate deliberately,
+            verify before finalizing, and leave artifacts behind for debugging or support.
+          </p>
+          <div class="metric-strip" aria-label="LocalForge capabilities">
+            <div><strong>30</strong><span>max iterations</span></div>
+            <div><strong>10</strong><span>bundled MCP profiles</span></div>
+            <div><strong>68</strong><span>unit tests verified locally</span></div>
+          </div>
+        </div>
+
+        <div class="terminal-shell run-demo">
+          <div class="terminal-bar">
+            <span class="dot red"></span>
+            <span class="dot amber"></span>
+            <span class="dot green"></span>
+            <span class="window-title">runs/20260702-053717/events.jsonl</span>
+          </div>
+          <div class="terminal-body log-stream" id="log-stream" aria-live="polite"></div>
+        </div>
+      </section>
+
+      <section id="tools" class="section" aria-labelledby="tools-title">
+        <p class="eyebrow">$ cat tool_manifest.json</p>
+        <h2 id="tools-title">The model gets a real tool surface, not a pretend one.</h2>
+        <div class="tool-grid">
+          <article class="tool-card reveal">
+            <span class="tool-prefix">builtin</span>
+            <h3>Workspace filesystem</h3>
+            <p>Read, write, patch, list, search, create directories, and inspect path metadata.</p>
+            <code>write_file -> read_file -> final</code>
+          </article>
+          <article class="tool-card reveal">
+            <span class="tool-prefix">policy</span>
+            <h3>Path confinement</h3>
+            <p>Absolute and parent-relative paths are blocked unless they are explicitly allowed.</p>
+            <code>--allow-external-path /Users/dima/Desktop</code>
+          </article>
+          <article class="tool-card reveal">
+            <span class="tool-prefix">runtime</span>
+            <h3>Shell execution</h3>
+            <p>Commands run from the workspace with timeouts, captured output, and return codes.</p>
+            <code>python -m unittest discover -s tests</code>
+          </article>
+          <article class="tool-card reveal">
+            <span class="tool-prefix">network</span>
+            <h3>Controlled HTTP fetch</h3>
+            <p>Fetch supports redirects, output limits, and private-address blocking by default.</p>
+            <code>fetch_url {"url": "https://..."}</code>
+          </article>
+          <article class="tool-card reveal">
+            <span class="tool-prefix">mcp</span>
+            <h3>External tool buses</h3>
+            <p>Context7, Playwright, GitHub, Filesystem, shadcn, and Sequential Thinking can attach.</p>
+            <code>mcp__github__list_pull_requests</code>
+          </article>
+          <article class="tool-card reveal">
+            <span class="tool-prefix">audit</span>
+            <h3>Every run leaves evidence</h3>
+            <p>JSONL events and transcripts make model actions supportable after the run ends.</p>
+            <code>localforge show-run &lt;run-id&gt; --json</code>
+          </article>
+        </div>
+      </section>
+
+      <section id="audit" class="section audit-section" aria-labelledby="audit-title">
+        <div>
+          <p class="eyebrow">$ tail -f runs/latest/events.jsonl</p>
+          <h2 id="audit-title">Final reports are blocked until mutations are verified.</h2>
+          <p>
+            LocalForge classifies tool calls, tracks when a mutation succeeds, and refuses to accept
+            a final success report until a concrete verification tool proves the postcondition.
+          </p>
+        </div>
+        <div class="audit-lane" aria-label="Verification timeline">
+          <div class="audit-event active">
+            <span>01</span>
+            <strong>inspect</strong>
+            <code>list_files {"path": "."}</code>
+          </div>
+          <div class="audit-event">
+            <span>02</span>
+            <strong>mutate</strong>
+            <code>write_file projects/api/main.py</code>
+          </div>
+          <div class="audit-event">
+            <span>03</span>
+            <strong>gate</strong>
+            <code>verification_required=true</code>
+          </div>
+          <div class="audit-event">
+            <span>04</span>
+            <strong>prove</strong>
+            <code>python -m unittest discover -s tests</code>
+          </div>
+          <div class="audit-event">
+            <span>05</span>
+            <strong>final</strong>
+            <code>run_final accepted</code>
+          </div>
+        </div>
+      </section>
+
+      <section id="deploy" class="section deploy-section" aria-labelledby="deploy-title">
+        <div class="terminal-shell command-card">
+          <div class="terminal-bar">
+            <span class="dot red"></span>
+            <span class="dot amber"></span>
+            <span class="dot green"></span>
+            <span class="window-title">quickstart.sh</span>
+          </div>
+          <pre><code>source ./venv/bin/activate
+localforge setup
+localforge doctor
+localforge mcp-list
+localforge run "Build a production-ready FastAPI service in projects/api."</code></pre>
+        </div>
+        <div>
+          <p class="eyebrow">$ ship with evidence</p>
+          <h2 id="deploy-title">Made for local operators who need traceability.</h2>
+          <p>
+            Run it from a dedicated workspace, keep secrets out of generated projects, review MCP
+            server commands before enabling them, and persist run artifacts when accountability
+            matters.
+          </p>
+          <a class="button primary" href="https://github.com/dmitriy718/localforge">open repository</a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>LocalForge</span>
+      <span>local-first build harness</span>
+      <span>auditable by default</span>
+    </footer>
+
+    <script src="./app.js" defer></script>
+  </body>
+</html>
