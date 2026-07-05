@@ -3,10 +3,15 @@ from __future__ import annotations
 import itertools
 import json
 import os
+import platform
 import select
+import shutil
 import subprocess
 import threading
+import time
+from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from localforge.config import McpServerConfig
@@ -22,9 +27,18 @@ class McpRemoteTool:
     input_schema: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class McpToolCallResult:
+    ok: bool
+    output: str
+    metadata: dict[str, Any]
+
+
 class McpStdioClient:
     def __init__(self, config: McpServerConfig) -> None:
         self.config = config
+        if _command_requires_docker_daemon(config.command):
+            _ensure_docker_daemon_available(config.startup_timeout_seconds)
         self._ids = itertools.count(1)
         env = os.environ.copy()
         for key, value in config.env.items():
@@ -40,6 +54,13 @@ class McpStdioClient:
             env=env,
         )
         self._lock = threading.Lock()
+        self._stderr_tail: deque[str] = deque(maxlen=50)
+        self._stderr_thread = threading.Thread(
+            target=self._drain_stderr,
+            name=f"localforge-mcp-stderr-{config.name}",
+            daemon=True,
+        )
+        self._stderr_thread.start()
         try:
             self._initialize()
         except Exception:
@@ -74,18 +95,29 @@ class McpStdioClient:
             )
         return parsed
 
-    def call_tool(self, name: str, arguments: dict[str, Any]) -> str:
+    def call_tool(self, name: str, arguments: dict[str, Any]) -> McpToolCallResult:
         response = self._request("tools/call", {"name": name, "arguments": arguments})
+        is_error = response.get("isError", False)
+        if not isinstance(is_error, bool):
+            is_error = True
         content = response.get("content", [])
         if not isinstance(content, list):
-            return json.dumps(response, indent=2, sort_keys=True)
+            return McpToolCallResult(
+                ok=False,
+                output=json.dumps(response, indent=2, sort_keys=True),
+                metadata={"is_error": True, "reason": "invalid_content"},
+            )
         rendered: list[str] = []
         for item in content:
             if isinstance(item, dict) and item.get("type") == "text":
                 rendered.append(str(item.get("text", "")))
             else:
                 rendered.append(json.dumps(item, sort_keys=True))
-        return "\n".join(rendered)
+        return McpToolCallResult(
+            ok=not is_error,
+            output="\n".join(rendered),
+            metadata={"is_error": is_error},
+        )
 
     def _initialize(self) -> None:
         self._request(
@@ -131,12 +163,7 @@ class McpStdioClient:
             self._wait_for_stdout()
             line = self._process.stdout.readline()
             if line == "":
-                stderr = ""
-                if self._process.stderr is not None:
-                    try:
-                        stderr = self._process.stderr.read()
-                    except OSError:
-                        stderr = ""
+                stderr = "".join(self._stderr_tail)
                 raise RuntimeError(f"MCP {self.config.name} exited while reading response. {stderr}")
             stripped = line.strip()
             if not stripped:
@@ -156,8 +183,18 @@ class McpStdioClient:
         if not ready:
             raise TimeoutError(
                 f"MCP {self.config.name} did not respond within "
-                f"{self.config.startup_timeout_seconds:.1f}s"
+                f"{self.config.startup_timeout_seconds:.1f}s. Recent stderr: "
+                f"{''.join(self._stderr_tail).strip()}"
             )
+
+    def _drain_stderr(self) -> None:
+        if self._process.stderr is None:
+            return
+        try:
+            for line in self._process.stderr:
+                self._stderr_tail.append(line)
+        except OSError:
+            return
 
 
 class McpToolAdapter(Tool):
@@ -175,7 +212,46 @@ class McpToolAdapter(Tool):
 
     def run(self, arguments: dict[str, object], context: RunContext) -> ToolResult:
         try:
-            output = self.client.call_tool(self.remote_tool.name, dict(arguments))
+            result = self.client.call_tool(self.remote_tool.name, dict(arguments))
         except Exception as exc:
             return ToolResult(self.spec.name, False, str(exc))
-        return ToolResult(self.spec.name, True, output)
+        return ToolResult(self.spec.name, result.ok, result.output, result.metadata)
+
+
+def _command_requires_docker_daemon(command: list[str]) -> bool:
+    if not command:
+        return False
+    executable = Path(command[0]).name
+    return executable == "docker" and "run" in command[1:]
+
+
+def _ensure_docker_daemon_available(timeout_seconds: float) -> None:
+    if shutil.which("docker") is None:
+        raise RuntimeError("Docker-backed MCP is enabled, but Docker CLI is not installed or not on PATH.")
+    if _docker_info_ok():
+        return
+    if platform.system() == "Darwin" and Path("/Applications/Docker.app").exists():
+        subprocess.run(["open", "-ga", "Docker"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        deadline = time.monotonic() + max(1.0, timeout_seconds)
+        while time.monotonic() < deadline:
+            if _docker_info_ok():
+                return
+            time.sleep(2)
+    raise RuntimeError(
+        "Docker-backed MCP is enabled, but the Docker daemon is not reachable. "
+        "Start Docker Desktop and verify `docker info` succeeds, or disable the Docker-backed MCP profile."
+    )
+
+
+def _docker_info_ok() -> bool:
+    try:
+        completed = subprocess.run(
+            ["docker", "info"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
