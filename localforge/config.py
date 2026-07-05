@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import os
 from pathlib import Path
 import re
+import shlex
 from typing import Any
 
 import yaml
@@ -29,6 +30,8 @@ class ToolConfig:
     allow_shell: bool = True
     allow_file_write: bool = True
     allow_network_fetch: bool = False
+    allow_private_network_fetch: bool = False
+    allow_external_paths: tuple[Path, ...] = ()
     command_timeout_seconds: float = 120.0
     max_output_chars: int = 30000
     max_file_read_chars: int = 200000
@@ -39,7 +42,7 @@ class McpServerConfig:
     name: str
     command: list[str]
     enabled: bool = True
-    env: dict[str, str] = field(default_factory=dict)
+    env: dict[str, str] = field(default_factory=dict, repr=False)
     description: str = ""
     required_env: tuple[str, ...] = ()
     startup_timeout_seconds: float = 45.0
@@ -88,6 +91,9 @@ def load_config(path: Path | None) -> HarnessConfig:
     servers: list[McpServerConfig] = []
     for index, server in enumerate(mcp_raw):
         server_map = _require_mapping(server, f"mcp_servers[{index}]")
+        name = server_map.get("name")
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"mcp_servers[{index}].name must be a non-empty string")
         command = server_map.get("command")
         if not isinstance(command, list) or not all(isinstance(part, str) for part in command):
             raise ValueError(f"mcp_servers[{index}].command must be a list of strings")
@@ -98,24 +104,38 @@ def load_config(path: Path | None) -> HarnessConfig:
             raise ValueError(f"mcp_servers[{index}].required_env must be a list of strings")
         servers.append(
             McpServerConfig(
-                name=str(server_map["name"]),
+                name=name,
                 command=[_expand_value(part, variables) for part in command],
-                enabled=bool(server_map.get("enabled", True)),
+                enabled=_bool_setting(server_map, "enabled", True, f"mcp_servers[{index}].enabled"),
                 env={
                     str(k): _expand_value(str(v), variables)
                     for k, v in _require_mapping(server_map.get("env"), "env").items()
                 },
                 description=str(server_map.get("description", "")),
                 required_env=tuple(required_env_raw),
-                startup_timeout_seconds=float(server_map.get("startup_timeout_seconds", 45.0)),
+                startup_timeout_seconds=_positive_float_setting(
+                    server_map,
+                    "startup_timeout_seconds",
+                    45.0,
+                    f"mcp_servers[{index}].startup_timeout_seconds",
+                ),
             )
         )
+
+    external_paths_raw = tools_raw.get("allow_external_paths", [])
+    if not isinstance(external_paths_raw, list) or not all(
+        isinstance(item, str) for item in external_paths_raw
+    ):
+        raise ValueError("tools.allow_external_paths must be a list of strings")
+    allow_external_paths = tuple(
+        _resolve_config_path(workspace, value) for value in external_paths_raw
+    )
 
     return HarnessConfig(
         workspace=workspace,
         runs_dir=runs_dir,
         projects_dir=projects_dir,
-        max_iterations=int(raw.get("max_iterations", 30)),
+        max_iterations=_positive_int_setting(raw, "max_iterations", 30, "max_iterations"),
         backend=BackendConfig(
             provider=str(backend_raw.get("provider", "ollama")),
             model=str(backend_raw.get("model", BackendConfig.model)),
@@ -127,23 +147,107 @@ def load_config(path: Path | None) -> HarnessConfig:
             ),
             llama_cpp_binary=str(backend_raw.get("llama_cpp_binary", "llama-cli")),
             llama_cpp_model_path=backend_raw.get("llama_cpp_model_path"),
-            temperature=float(backend_raw.get("temperature", 0.2)),
-            max_tokens=int(backend_raw.get("max_tokens", 4096)),
-            context_window_tokens=int(backend_raw.get("context_window_tokens", 32768)),
-            request_timeout_seconds=float(backend_raw.get("request_timeout_seconds", 300.0)),
-            force_json=bool(backend_raw.get("force_json", False)),
-            heartbeat_seconds=float(backend_raw.get("heartbeat_seconds", 10.0)),
+            temperature=_nonnegative_float_setting(backend_raw, "temperature", 0.2, "backend.temperature"),
+            max_tokens=_positive_int_setting(backend_raw, "max_tokens", 4096, "backend.max_tokens"),
+            context_window_tokens=_positive_int_setting(
+                backend_raw,
+                "context_window_tokens",
+                32768,
+                "backend.context_window_tokens",
+            ),
+            request_timeout_seconds=_positive_float_setting(
+                backend_raw,
+                "request_timeout_seconds",
+                300.0,
+                "backend.request_timeout_seconds",
+            ),
+            force_json=_bool_setting(backend_raw, "force_json", False, "backend.force_json"),
+            heartbeat_seconds=_positive_float_setting(
+                backend_raw,
+                "heartbeat_seconds",
+                10.0,
+                "backend.heartbeat_seconds",
+            ),
         ),
         tools=ToolConfig(
-            allow_shell=bool(tools_raw.get("allow_shell", True)),
-            allow_file_write=bool(tools_raw.get("allow_file_write", True)),
-            allow_network_fetch=bool(tools_raw.get("allow_network_fetch", False)),
-            command_timeout_seconds=float(tools_raw.get("command_timeout_seconds", 120.0)),
-            max_output_chars=int(tools_raw.get("max_output_chars", 30000)),
-            max_file_read_chars=int(tools_raw.get("max_file_read_chars", 200000)),
+            allow_shell=_bool_setting(tools_raw, "allow_shell", True, "tools.allow_shell"),
+            allow_file_write=_bool_setting(
+                tools_raw,
+                "allow_file_write",
+                True,
+                "tools.allow_file_write",
+            ),
+            allow_network_fetch=_bool_setting(
+                tools_raw,
+                "allow_network_fetch",
+                False,
+                "tools.allow_network_fetch",
+            ),
+            allow_private_network_fetch=_bool_setting(
+                tools_raw,
+                "allow_private_network_fetch",
+                False,
+                "tools.allow_private_network_fetch",
+            ),
+            allow_external_paths=allow_external_paths,
+            command_timeout_seconds=_positive_float_setting(
+                tools_raw,
+                "command_timeout_seconds",
+                120.0,
+                "tools.command_timeout_seconds",
+            ),
+            max_output_chars=_positive_int_setting(
+                tools_raw,
+                "max_output_chars",
+                30000,
+                "tools.max_output_chars",
+            ),
+            max_file_read_chars=_positive_int_setting(
+                tools_raw,
+                "max_file_read_chars",
+                200000,
+                "tools.max_file_read_chars",
+            ),
         ),
         mcp_servers=tuple(servers),
     )
+
+
+def _bool_setting(values: dict[str, Any], key: str, default: bool, label: str) -> bool:
+    value = values.get(key, default)
+    if not isinstance(value, bool):
+        raise ValueError(f"{label} must be a boolean")
+    return value
+
+
+def _positive_int_setting(values: dict[str, Any], key: str, default: int, label: str) -> int:
+    value = values.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{label} must be a positive integer")
+    if value <= 0:
+        raise ValueError(f"{label} must be greater than zero")
+    return value
+
+
+def _positive_float_setting(values: dict[str, Any], key: str, default: float, label: str) -> float:
+    value = _float_setting(values, key, default, label)
+    if value <= 0:
+        raise ValueError(f"{label} must be greater than zero")
+    return value
+
+
+def _nonnegative_float_setting(values: dict[str, Any], key: str, default: float, label: str) -> float:
+    value = _float_setting(values, key, default, label)
+    if value < 0:
+        raise ValueError(f"{label} must be zero or greater")
+    return value
+
+
+def _float_setting(values: dict[str, Any], key: str, default: float, label: str) -> float:
+    value = values.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValueError(f"{label} must be a number")
+    return float(value)
 
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -159,22 +263,51 @@ def _expand_value(value: str, variables: dict[str, str]) -> str:
     return _ENV_PATTERN.sub(replace, value)
 
 
+def _resolve_config_path(workspace: Path, value: str) -> Path:
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    return (workspace / path).resolve()
+
+
 def _load_dotenv(path: Path) -> None:
     if not path.exists():
         return
     for line_no, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
+        try:
+            parsed = _parse_dotenv_line(raw_line)
+        except ValueError as exc:
+            raise ValueError(f"Invalid .env line {line_no}: {exc}") from exc
+        if parsed is None:
             continue
-        if "=" not in line:
-            raise ValueError(f"Invalid .env line {line_no}: expected KEY=value")
-        key, value = line.split("=", 1)
-        key = key.strip()
+        key, value = parsed
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
             raise ValueError(f"Invalid .env key on line {line_no}: {key}")
         if key in os.environ:
             continue
-        os.environ[key] = value.strip().strip('"').strip("'")
+        os.environ[key] = value
+
+
+def _parse_dotenv_line(raw_line: str) -> tuple[str, str] | None:
+    line = raw_line.strip()
+    if not line or line.startswith("#"):
+        return None
+    if line.startswith("export "):
+        line = line.removeprefix("export ").strip()
+    try:
+        parsed = shlex.split(line, comments=False, posix=True)
+    except ValueError as exc:
+        raise ValueError(f"Invalid .env line: {exc}") from exc
+    if len(parsed) == 1:
+        line = parsed[0]
+        if "=" not in line:
+            raise ValueError("expected KEY=value")
+    elif len(parsed) != 0:
+        raise ValueError("Invalid .env line: expected one KEY=value assignment")
+    if "=" not in line:
+        raise ValueError("Invalid .env line: expected KEY=value")
+    key, value = line.split("=", 1)
+    return key.strip(), value.strip()
 
 
 def _first_nonempty(*values: str | None) -> str:
@@ -217,6 +350,8 @@ tools:
   allow_shell: true
   allow_file_write: true
   allow_network_fetch: false
+  allow_private_network_fetch: false
+  allow_external_paths: []
   command_timeout_seconds: 120
   max_output_chars: 30000
   max_file_read_chars: 200000

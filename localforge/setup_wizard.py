@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import time
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ from localforge.config import write_default_config
 LOCALCONFIG_NAME = "localforge.localconfig"
 SKIP_SETUP_ENV = "LOCALFORGE_SKIP_SETUP"
 _ENV_KEY_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_ENV_SAFE_VALUE_PATTERN = re.compile(r"[A-Za-z0-9_./:@%+=,-]*")
 
 
 @dataclass(frozen=True)
@@ -272,6 +274,8 @@ def _write_yaml_with_backup(path: Path, data: dict[str, Any]) -> None:
 def _upsert_env_value(path: Path, key: str, value: str) -> None:
     if not _ENV_KEY_PATTERN.fullmatch(key):
         raise ValueError(f"Invalid .env key: {key}")
+    if "\n" in value or "\r" in value:
+        raise ValueError(f"Invalid .env value for {key}: newlines are not allowed")
     lines: list[str] = []
     found = False
     if path.exists():
@@ -279,11 +283,11 @@ def _upsert_env_value(path: Path, key: str, value: str) -> None:
         lines = path.read_text(encoding="utf-8").splitlines()
     for index, line in enumerate(lines):
         if line.startswith(f"{key}=") or line.startswith(f"export {key}="):
-            lines[index] = f"{key}={value}"
+            lines[index] = f"{key}={_format_env_value(value)}"
             found = True
             break
     if not found:
-        lines.append(f"{key}={value}")
+        lines.append(f"{key}={_format_env_value(value)}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -297,14 +301,27 @@ def _read_env_file(path: Path) -> dict[str, str]:
             continue
         if stripped.startswith("export "):
             stripped = stripped.removeprefix("export ").strip()
+        try:
+            parsed = shlex.split(stripped, comments=False, posix=True)
+        except ValueError:
+            continue
+        if len(parsed) == 1:
+            stripped = parsed[0]
         if "=" not in stripped:
             continue
         key, value = stripped.split("=", 1)
         key = key.strip()
         if not _ENV_KEY_PATTERN.fullmatch(key):
             continue
-        values[key] = value.strip().strip('"').strip("'")
+        values[key] = value.strip()
     return values
+
+
+def _format_env_value(value: str) -> str:
+    if value and _ENV_SAFE_VALUE_PATTERN.fullmatch(value):
+        return value
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
 
 
 def _credential_present(key: str, env_values: dict[str, str]) -> bool:

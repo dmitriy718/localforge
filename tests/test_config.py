@@ -67,6 +67,39 @@ backend:
                 os.environ["OLLAMA_HOST"] = previous
         self.assertEqual(cfg.backend.ollama_url, "http://127.0.0.1:11434")
 
+    def test_load_config_parses_exported_quoted_dotenv_values(self) -> None:
+        previous = os.environ.pop("GITHUB_PERSONAL_ACCESS_TOKEN", None)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "localforge.yaml"
+                path.write_text(
+                    """
+workspace: .
+mcp_servers:
+  - name: github
+    command: ["docker", "run", "example"]
+    env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_PERSONAL_ACCESS_TOKEN}"
+""",
+                    encoding="utf-8",
+                )
+                (Path(tmp) / ".env").write_text(
+                    'export GITHUB_PERSONAL_ACCESS_TOKEN="token with spaces # and \\"quote\\""\n',
+                    encoding="utf-8",
+                )
+
+                cfg = load_config(path)
+        finally:
+            if previous is None:
+                os.environ.pop("GITHUB_PERSONAL_ACCESS_TOKEN", None)
+            else:
+                os.environ["GITHUB_PERSONAL_ACCESS_TOKEN"] = previous
+
+        self.assertEqual(
+            cfg.mcp_servers[0].env["GITHUB_PERSONAL_ACCESS_TOKEN"],
+            'token with spaces # and "quote"',
+        )
+
     def test_context_window_defaults_to_agentic_size_and_can_be_overridden(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             default_path = Path(tmp) / "default.yaml"
@@ -87,6 +120,23 @@ backend:
 
         self.assertEqual(default_cfg.backend.context_window_tokens, 32768)
         self.assertEqual(override_cfg.backend.context_window_tokens, 65536)
+
+    def test_external_path_allowlist_is_resolved_from_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "localforge.yaml"
+            path.write_text(
+                """
+workspace: .
+tools:
+  allow_external_paths:
+    - external
+""",
+                encoding="utf-8",
+            )
+
+            cfg = load_config(path)
+
+        self.assertEqual(cfg.tools.allow_external_paths, ((Path(tmp) / "external").resolve(),))
 
     def test_setup_marker_path_lives_next_to_config(self) -> None:
         path = Path("/tmp/example/localforge.yaml")
@@ -162,6 +212,25 @@ invalid key=value
         self.assertEqual(values["BRAVE_API_KEY"], "brave-token")
         self.assertNotIn("invalid key", values)
 
+    def test_env_upsert_quotes_special_values_and_reader_round_trips(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+
+            _upsert_env_value(env_path, "BRAVE_API_KEY", 'token with spaces # and "quote"')
+
+            raw = env_path.read_text(encoding="utf-8")
+            values = _read_env_file(env_path)
+
+        self.assertIn('BRAVE_API_KEY="token with spaces # and \\"quote\\""', raw)
+        self.assertEqual(values["BRAVE_API_KEY"], 'token with spaces # and "quote"')
+
+    def test_env_upsert_rejects_newline_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+
+            with self.assertRaisesRegex(ValueError, "newlines are not allowed"):
+                _upsert_env_value(env_path, "BRAVE_API_KEY", "line-one\nline-two")
+
     def test_credential_present_checks_environment_before_env_file(self) -> None:
         previous = os.environ.get("NEON_API_KEY")
         os.environ["NEON_API_KEY"] = "from-environment"
@@ -187,9 +256,58 @@ invalid key=value
         github = _find_mcp_server(config, "github")
 
         self.assertIsNotNone(github)
+        assert github is not None
         self.assertEqual(github["name"], "github")
         self.assertIsNone(_find_mcp_server(config, "missing"))
         self.assertEqual(_enabled_mcp_names(config), ["github", "filesystem"])
+
+    def test_mcp_server_config_repr_does_not_disclose_env_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "localforge.yaml"
+            path.write_text(
+                """
+workspace: .
+mcp_servers:
+  - name: github
+    command: ["docker", "run", "example"]
+    env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: super-secret-token
+""",
+                encoding="utf-8",
+            )
+
+            cfg = load_config(path)
+
+        self.assertNotIn("super-secret-token", repr(cfg))
+
+    def test_string_boolean_config_values_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "localforge.yaml"
+            path.write_text(
+                """
+workspace: .
+tools:
+  allow_shell: "false"
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "tools.allow_shell must be a boolean"):
+                load_config(path)
+
+    def test_nonpositive_numeric_config_values_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "localforge.yaml"
+            path.write_text(
+                """
+workspace: .
+max_iterations: 0
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "max_iterations must be greater than zero"):
+                load_config(path)
 
 
 if __name__ == "__main__":
