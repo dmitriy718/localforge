@@ -18,6 +18,57 @@ const logEvents = [
   ["00:00:45", "run_final", "accepted final report"],
 ];
 
+const menuItems = [
+  {
+    status: "loop armed",
+    title: "$ select 1: autonomous run loop",
+    copy:
+      "LocalForge keeps the model inside a bounded inspect, plan, act, verify cycle. Mutations create a verification debt that must be paid before the final report is accepted.",
+    rows: [
+      ["inspect", "list files, read code, check project metadata"],
+      ["mutate", "write, patch, create directories, or run controlled shell commands"],
+      ["verify", "tests, builds, path checks, smoke scripts, or command output"],
+    ],
+    chips: ["30 iteration cap", "timeouts", "failure reasons"],
+  },
+  {
+    status: "tools online",
+    title: "$ select 2: real tool manifest",
+    copy:
+      "The model receives explicit tools instead of vague permissions. Built-ins handle files, shell, patches, JSON, path metadata, and optional network fetches.",
+    rows: [
+      ["filesystem", "read, write, patch, list, search, and path-info"],
+      ["shell", "workspace-scoped commands with captured stdout, stderr, and exit codes"],
+      ["mcp", "attach GitHub, Playwright, Context7, Supabase, Neon, and more"],
+    ],
+    chips: ["path policy", "MCP profiles", "dry-run review"],
+  },
+  {
+    status: "audit live",
+    title: "$ select 3: evidence trail",
+    copy:
+      "Every meaningful step becomes durable run evidence, making the operator's claims inspectable after the session ends.",
+    rows: [
+      ["events", "runs/<run-id>/events.jsonl records state transitions and tools"],
+      ["transcript", "full model/tool conversation is saved for debugging"],
+      ["history", "CLI commands expose recent runs and tail selected artifacts"],
+    ],
+    chips: ["events.jsonl", "transcript.json", "show-run --json"],
+  },
+  {
+    status: "ops ready",
+    title: "$ select 4: operator controls",
+    copy:
+      "Setup and doctor commands make local backends explicit. Secrets stay in local environment files, while generated projects remain reviewable.",
+    rows: [
+      ["setup", "guided local config with backups before secret-file edits"],
+      ["doctor", "backend checks for Ollama or llama.cpp before real work"],
+      ["policy", "external paths and network access are opt-in controls"],
+    ],
+    chips: ["local-first", "rerunnable setup", "safe defaults"],
+  },
+];
+
 const typedCommand = document.querySelector("#typed-command");
 let commandIndex = 0;
 let charIndex = 0;
@@ -100,6 +151,68 @@ function animateAuditLane() {
     events[index].classList.add("active");
     index = (index + 1) % events.length;
   }, 1300);
+}
+
+function escapeHtml(value) {
+  return value.replace(/[&<>"']/g, (character) => {
+    const entities = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#039;",
+    };
+    return entities[character];
+  });
+}
+
+function renderOperatorMenu(index) {
+  const screen = document.querySelector("#menu-screen");
+  const status = document.querySelector("#menu-status");
+  const options = [...document.querySelectorAll(".menu-option")];
+  const item = menuItems[index];
+  if (!screen || !status || !item) return;
+
+  options.forEach((option, optionIndex) => {
+    const isActive = optionIndex === index;
+    option.classList.toggle("active", isActive);
+    option.setAttribute("aria-selected", String(isActive));
+  });
+
+  status.textContent = item.status;
+  screen.innerHTML = `
+    <h3>${escapeHtml(item.title)}</h3>
+    <p>${escapeHtml(item.copy)}</p>
+    <ul class="menu-list">
+      ${item.rows
+        .map(([label, text]) => `<li><span>${escapeHtml(label)}</span><strong>${escapeHtml(text)}</strong></li>`)
+        .join("")}
+    </ul>
+    <div class="menu-chip-row">
+      ${item.chips.map((chip) => `<span class="menu-chip">${escapeHtml(chip)}</span>`).join("")}
+    </div>
+  `;
+}
+
+function initializeOperatorMenu() {
+  const options = [...document.querySelectorAll(".menu-option")];
+  if (!options.length) return;
+
+  options.forEach((option) => {
+    option.addEventListener("click", () => {
+      renderOperatorMenu(Number(option.dataset.menuIndex));
+    });
+  });
+
+  window.addEventListener("keydown", (event) => {
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    const index = Number(event.key) - 1;
+    if (index >= 0 && index < menuItems.length) {
+      renderOperatorMenu(index);
+    }
+  });
+
+  renderOperatorMenu(0);
 }
 
 function addTerminalTilt() {
@@ -205,5 +318,6 @@ typeCommand();
 renderLogStream();
 revealCards();
 animateAuditLane();
+initializeOperatorMenu();
 addTerminalTilt();
 runSignalCanvas();

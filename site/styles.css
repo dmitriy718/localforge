@@ -9,9 +9,11 @@
   --muted: #94baa5;
   --green: #72ffad;
   --cyan: #71e3ff;
+  --violet: #b78cff;
   --amber: #ffd36f;
   --red: #ff6d6d;
-  --shadow: rgba(4, 255, 139, 0.16);
+  --shadow: rgba(4, 255, 139, 0.2);
+  --cyan-shadow: rgba(113, 227, 255, 0.18);
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
@@ -30,9 +32,11 @@ body {
   background:
     linear-gradient(rgba(114, 255, 173, 0.035) 1px, transparent 1px),
     linear-gradient(90deg, rgba(114, 255, 173, 0.025) 1px, transparent 1px),
+    radial-gradient(circle at 14% 8%, rgba(113, 227, 255, 0.12), transparent 18rem),
+    radial-gradient(circle at 82% 4%, rgba(183, 140, 255, 0.14), transparent 20rem),
     radial-gradient(circle at 50% 0%, rgba(12, 64, 42, 0.5), transparent 42rem),
     var(--bg);
-  background-size: 28px 28px, 28px 28px, auto, auto;
+  background-size: 28px 28px, 28px 28px, auto, auto, auto, auto;
   color: var(--text);
   font-family: var(--sans);
   line-height: 1.55;
@@ -144,15 +148,15 @@ main,
 
 .hero {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(18rem, 27rem);
+  grid-template-columns: minmax(0, 1fr) minmax(18rem, 30rem);
   gap: clamp(1rem, 3vw, 2rem);
-  align-items: end;
-  min-height: calc(100vh - 64px);
-  padding: clamp(2rem, 5vw, 5rem) clamp(1rem, 5vw, 4rem) clamp(1.5rem, 4vw, 3rem);
+  align-items: center;
+  min-height: min(760px, calc(100vh - 64px));
+  padding: clamp(1.4rem, 4vw, 3.2rem) clamp(1rem, 5vw, 4rem) clamp(1.25rem, 3vw, 2.4rem);
 }
 
 .terminal-shell,
-.status-panel,
+.operator-console,
 .tool-card,
 .audit-event {
   border: 1px solid var(--line);
@@ -165,8 +169,9 @@ main,
 }
 
 .hero-terminal {
-  min-height: min(68vh, 46rem);
+  min-height: min(56vh, 34rem);
   transform-style: preserve-3d;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.025) inset, 0 28px 90px rgba(0, 0, 0, 0.42), 0 0 70px var(--shadow);
 }
 
 .terminal-bar {
@@ -208,7 +213,7 @@ main,
 }
 
 .terminal-body {
-  padding: clamp(1.25rem, 4vw, 3rem);
+  padding: clamp(1.1rem, 3.3vw, 2.35rem);
 }
 
 .eyebrow {
@@ -227,18 +232,19 @@ p {
 }
 
 h1 {
-  max-width: 13ch;
-  margin-bottom: 1.2rem;
+  max-width: 14ch;
+  margin-bottom: 1rem;
   color: var(--text);
-  font-size: clamp(3rem, 9vw, 8.4rem);
-  line-height: 0.88;
+  text-shadow: 0 0 40px rgba(114, 255, 173, 0.12);
+  font-size: clamp(3rem, 7.8vw, 6.9rem);
+  line-height: 0.9;
   letter-spacing: 0;
 }
 
 h2 {
   max-width: 17ch;
   margin-bottom: 1rem;
-  font-size: clamp(2rem, 5vw, 4.8rem);
+  font-size: clamp(1.9rem, 4.2vw, 4rem);
   line-height: 0.95;
   letter-spacing: 0;
 }
@@ -254,14 +260,14 @@ p {
 }
 
 .hero-copy {
-  max-width: 62rem;
+  max-width: 58rem;
 }
 
 .command-line {
   display: flex;
   align-items: center;
   min-height: 3.4rem;
-  margin: 2rem 0;
+  margin: 1.35rem 0;
   padding: 0.9rem 1rem;
   border: 1px solid rgba(113, 227, 255, 0.28);
   background: rgba(113, 227, 255, 0.045);
@@ -319,47 +325,150 @@ p {
   color: var(--green);
 }
 
-.status-panel {
-  padding: 1rem;
-  background: rgba(7, 20, 15, 0.82);
-}
-
-.status-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 1rem;
-  padding: 1rem 0;
-  border-bottom: 1px solid var(--line);
+.operator-console {
+  padding: 0.85rem;
+  background:
+    linear-gradient(145deg, rgba(113, 227, 255, 0.075), transparent 38%),
+    linear-gradient(315deg, rgba(183, 140, 255, 0.11), transparent 42%),
+    rgba(7, 20, 15, 0.88);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.025) inset, 0 24px 80px rgba(0, 0, 0, 0.38), 0 0 54px var(--cyan-shadow);
   font-family: var(--mono);
 }
 
-.status-row span {
+.console-header,
+.console-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
   color: var(--muted);
+  font-size: 0.78rem;
 }
 
-.status-row strong {
-  color: var(--text);
-  text-align: right;
+.console-header {
+  padding: 0.45rem 0.4rem 0.85rem;
+  border-bottom: 1px solid var(--line);
+  text-transform: lowercase;
 }
 
-.health-meter {
+.console-header strong {
+  color: var(--green);
+  font-weight: 800;
+}
+
+.console-led {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 999px;
+  background: var(--green);
+  box-shadow: 0 0 16px var(--green);
+}
+
+.menu-options {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: 0.45rem;
-  margin-top: 1.2rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin: 0.85rem 0;
 }
 
-.health-meter span {
-  height: 7rem;
-  border: 1px solid rgba(114, 255, 173, 0.22);
-  background: linear-gradient(to top, var(--green), rgba(114, 255, 173, 0.08));
-  transform-origin: bottom;
-  animation: meter 1.8s ease-in-out infinite alternate;
-  animation-delay: calc(var(--i) * -180ms);
+.menu-option {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 2.75rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid rgba(114, 255, 173, 0.18);
+  background: rgba(2, 8, 6, 0.48);
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: border-color 180ms ease, background 180ms ease, box-shadow 180ms ease, color 180ms ease, transform 180ms ease;
+}
+
+.menu-option:hover,
+.menu-option:focus-visible {
+  border-color: var(--cyan);
+  color: var(--text);
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.menu-option span {
+  color: var(--cyan);
+}
+
+.menu-option.active {
+  border-color: var(--green);
+  background: rgba(114, 255, 173, 0.1);
+  color: var(--text);
+  box-shadow: 0 0 28px rgba(114, 255, 173, 0.12);
+}
+
+.menu-screen {
+  min-height: 17rem;
+  padding: 1rem;
+  border: 1px solid rgba(113, 227, 255, 0.22);
+  background: rgba(1, 8, 6, 0.62);
+  box-shadow: inset 0 0 40px rgba(113, 227, 255, 0.04);
+}
+
+.menu-screen h3 {
+  margin-bottom: 0.7rem;
+  color: var(--green);
+  font-size: 0.92rem;
+  text-transform: lowercase;
+}
+
+.menu-screen p {
+  margin-bottom: 0.95rem;
+  font-family: var(--sans);
+  font-size: 0.95rem;
+}
+
+.menu-list {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0 0 1rem;
+  padding: 0;
+  list-style: none;
+}
+
+.menu-list li {
+  display: grid;
+  grid-template-columns: 5.2rem minmax(0, 1fr);
+  gap: 0.7rem;
+  align-items: start;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid rgba(114, 255, 173, 0.1);
+  color: var(--text);
+  font-size: 0.86rem;
+}
+
+.menu-list span {
+  color: var(--cyan);
+}
+
+.menu-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.menu-chip {
+  padding: 0.35rem 0.5rem;
+  border: 1px solid rgba(255, 211, 111, 0.28);
+  background: rgba(255, 211, 111, 0.08);
+  color: var(--amber);
+  font-size: 0.76rem;
+}
+
+.console-hint {
+  padding: 0.85rem 0.4rem 0.25rem;
 }
 
 .section {
-  padding: clamp(4rem, 9vw, 8rem) clamp(1rem, 5vw, 4rem);
+  padding: clamp(3rem, 7vw, 6rem) clamp(1rem, 5vw, 4rem);
 }
 
 .split,
@@ -372,7 +481,7 @@ p {
 }
 
 .metric-strip {
-  margin-top: 2rem;
+  margin-top: 1.35rem;
 }
 
 .metric-strip div {
@@ -399,14 +508,14 @@ p {
 }
 
 .run-demo {
-  min-height: 31rem;
+  min-height: 27rem;
 }
 
 .log-stream {
   display: grid;
   align-content: start;
   gap: 0.55rem;
-  min-height: 28rem;
+  min-height: 24rem;
   font-family: var(--mono);
   font-size: 0.86rem;
 }
@@ -441,11 +550,18 @@ p {
 }
 
 .tool-card {
-  min-height: 17rem;
+  min-height: 15rem;
   padding: 1.2rem;
-  background: rgba(8, 24, 18, 0.78);
+  background:
+    linear-gradient(145deg, rgba(114, 255, 173, 0.07), transparent 42%),
+    rgba(8, 24, 18, 0.78);
   transform: translateY(1rem);
   opacity: 0;
+}
+
+.tool-card:hover {
+  border-color: rgba(113, 227, 255, 0.42);
+  box-shadow: 0 0 0 1px rgba(113, 227, 255, 0.045) inset, 0 24px 80px rgba(0, 0, 0, 0.35), 0 0 36px var(--cyan-shadow);
 }
 
 .tool-card.visible {
@@ -496,6 +612,8 @@ p {
 }
 
 .audit-event.active {
+  border-color: var(--line-strong);
+  background: rgba(114, 255, 173, 0.1);
   box-shadow: 0 0 36px var(--shadow);
 }
 
@@ -519,17 +637,6 @@ p {
 @keyframes blink {
   50% {
     opacity: 0;
-  }
-}
-
-@keyframes meter {
-  from {
-    transform: scaleY(0.18);
-    opacity: 0.48;
-  }
-  to {
-    transform: scaleY(1);
-    opacity: 1;
   }
 }
 
@@ -561,6 +668,7 @@ p {
 
   .hero {
     min-height: auto;
+    align-items: stretch;
   }
 
   .tool-grid {
@@ -601,8 +709,8 @@ p {
     gap: 0.25rem;
   }
 
-  .health-meter span {
-    height: 4rem;
+  .menu-screen {
+    min-height: 15rem;
   }
 }
 

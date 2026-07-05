@@ -57,26 +57,34 @@
           </div>
         </div>
 
-        <aside class="status-panel" aria-label="LocalForge run status">
-          <div class="status-row">
-            <span>backend</span>
-            <strong>ollama / llama.cpp</strong>
+        <aside class="operator-console" aria-label="Interactive LocalForge operator menu">
+          <div class="console-header">
+            <span class="console-led"></span>
+            <span>operator menu</span>
+            <strong id="menu-status">ready</strong>
           </div>
-          <div class="status-row">
-            <span>tools</span>
-            <strong>shell + files + MCP</strong>
+          <div class="menu-options" role="tablist" aria-label="LocalForge details">
+            <button class="menu-option active" type="button" role="tab" aria-selected="true" data-menu-index="0">
+              <span>1)</span>
+              <strong>run loop</strong>
+            </button>
+            <button class="menu-option" type="button" role="tab" aria-selected="false" data-menu-index="1">
+              <span>2)</span>
+              <strong>tooling</strong>
+            </button>
+            <button class="menu-option" type="button" role="tab" aria-selected="false" data-menu-index="2">
+              <span>3)</span>
+              <strong>evidence</strong>
+            </button>
+            <button class="menu-option" type="button" role="tab" aria-selected="false" data-menu-index="3">
+              <span>4)</span>
+              <strong>operator</strong>
+            </button>
           </div>
-          <div class="status-row">
-            <span>artifacts</span>
-            <strong>events.jsonl + transcript.json</strong>
-          </div>
-          <div class="health-meter" aria-label="Verification gate animation">
-            <span style="--i: 1"></span>
-            <span style="--i: 2"></span>
-            <span style="--i: 3"></span>
-            <span style="--i: 4"></span>
-            <span style="--i: 5"></span>
-            <span style="--i: 6"></span>
+          <div class="menu-screen" id="menu-screen" role="tabpanel" aria-live="polite"></div>
+          <div class="console-hint">
+            <span>choose 1-4</span>
+            <span>click or press number keys</span>
           </div>
         </aside>
       </section>
