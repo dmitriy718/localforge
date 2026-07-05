@@ -7,13 +7,15 @@ Primary backend: Ollama. Optional backend: llama.cpp via `llama-cli`. MCP server
 ## Capabilities
 
 - Local model execution through Ollama or llama.cpp.
-- Real local tools: shell, file read/write, JSON write, unified-diff patch application, file listing, text search, and optional HTTP fetch.
+- Real local tools: shell, verified directory creation, path metadata checks, file read/write, JSON write, unified-diff patch application, file listing, text search, and optional HTTP fetch.
 - MCP stdio client that registers configured remote tools as callable model tools.
 - 10 bundled MCP profiles: Context7, Playwright, GitHub, Supabase, Brave Search, Filesystem, shadcn, Neon, Firecrawl, and Sequential Thinking.
 - Per-run audit log in `runs/<run-id>/events.jsonl`.
 - Full transcript in `runs/<run-id>/transcript.json`.
 - CLI run history and run inspection commands for support/debugging.
 - Backups before file replacement.
+- Post-write and post-directory-create verification before tools report success.
+- Verification-aware finalization: after a mutation, the agent must run a successful verification tool before LocalForge accepts a final success report.
 - Dry-run mode for tool execution review.
 - CLI doctor command for backend verification.
 
@@ -61,7 +63,16 @@ Inspect run history:
 
 ```bash
 localforge runs --limit 10
+localforge runs --limit 10 --json
 localforge show-run <run-id> --tail 20
+localforge show-run <run-id> --tail 20 --json
+```
+
+Verify a path with the same filesystem policy used by built-in tools:
+
+```bash
+localforge path-info projects
+localforge path-info /Users/dima/Desktop/demo --allow-external-path /Users/dima/Desktop
 ```
 
 This workspace is currently configured for:
@@ -137,6 +148,13 @@ Run local tests:
 ./venv/bin/python -m unittest discover -s tests
 ```
 
+Run lint and type checks:
+
+```bash
+./venv/bin/python -m ruff check .
+./venv/bin/python -m mypy localforge tests
+```
+
 Run static syntax verification:
 
 ```bash
@@ -164,9 +182,13 @@ Recommended production deployment:
 - Run in a dedicated user account.
 - Use a dedicated workspace directory.
 - Keep secrets out of the workspace unless the model explicitly needs them.
+- Keep `tools.allow_external_paths` empty unless a run explicitly needs access outside the workspace. For example, allow Desktop writes only by adding `/Users/<name>/Desktop` or another exact parent path.
+- Prefer temporary `--allow-external-path` flags for one-off external writes instead of permanently widening config.
 - Enable network fetch only when required.
 - Configure MCP servers explicitly and audit their commands.
 - Persist `runs/` artifacts for traceability.
+
+If an enabled MCP profile launches `docker run`, LocalForge checks Docker daemon readiness before starting it. On macOS, it attempts to open Docker Desktop and waits for `docker info` before failing with an actionable error.
 
 Docker deployment includes Node/npm/git so bundled `npx` MCP servers can run inside the container. It also includes `docker-cli` for MCP profiles that launch containers, such as the official GitHub MCP. When running in Docker against host Ollama, set `OLLAMA_HOST=http://host.docker.internal:11434`.
 

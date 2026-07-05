@@ -16,11 +16,13 @@ jobs:
         with:
           node-version: "22"
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e .
+      - run: python -m pip install -e ".[dev]"
       - run: python -m compileall localforge tests
       - run: python -m unittest discover -s tests
         env:
           LOCALFORGE_SKIP_SETUP: "1"
+      - run: python -m ruff check .
+      - run: python -m mypy localforge tests
 
   docker:
     runs-on: ubuntu-latest

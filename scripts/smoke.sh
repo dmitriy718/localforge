@@ -26,6 +26,8 @@ run_check() {
 
 run_check "compile" "$PYTHON_BIN" -m compileall localforge tests
 run_check "unit tests" "$PYTHON_BIN" -m unittest discover -s tests
+run_check "lint" "$PYTHON_BIN" -m ruff check .
+run_check "typecheck" "$PYTHON_BIN" -m mypy localforge tests
 run_check "doctor" "$LOCALFORGE_BIN" doctor --config "$CONFIG"
 run_check "mcp smoke" "$LOCALFORGE_BIN" mcp-smoke --config "$CONFIG"
 

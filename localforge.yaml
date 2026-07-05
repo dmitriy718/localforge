@@ -18,6 +18,8 @@ tools:
   allow_shell: true
   allow_file_write: true
   allow_network_fetch: true
+  allow_private_network_fetch: false
+  allow_external_paths: []
   command_timeout_seconds: 120
   max_output_chars: 30000
   max_file_read_chars: 200000

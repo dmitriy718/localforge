@@ -1,7 +1,7 @@
 PYTHON ?= ./venv/bin/python
 CONFIG ?= localforge.yaml
 
-.PHONY: doctor mcp-smoke test compile smoke docker-build docker-smoke run dry-run
+.PHONY: doctor mcp-smoke test compile lint typecheck smoke docker-build docker-smoke run dry-run
 
 doctor:
 	$(PYTHON) -m localforge.cli doctor --config $(CONFIG)
@@ -14,6 +14,12 @@ test:
 
 compile:
 	$(PYTHON) -m compileall localforge tests
+
+lint:
+	$(PYTHON) -m ruff check .
+
+typecheck:
+	$(PYTHON) -m mypy localforge tests
 
 smoke:
 	./scripts/smoke.sh
