@@ -5,7 +5,7 @@ import time
 import unittest
 from pathlib import Path
 
-from localforge.agent import AgentRunner, interpret_action, parse_action
+from localforge.agent import AgentRunner, _is_verification_shell_command, interpret_action, parse_action
 from localforge.backends.base import ModelBackend
 from localforge.config import HarnessConfig, ToolConfig
 from localforge.models import AgentEvent, Message
@@ -106,6 +106,14 @@ class AgentProtocolTests(unittest.TestCase):
         assert action is not None
         self.assertEqual(action.tool_calls[0].arguments, {"path": "docs"})
 
+    def test_interpreter_parses_quoted_bare_tool_command_flags(self) -> None:
+        registry = create_builtin_registry(ToolConfig())
+        action, error = interpret_action("```bash\nread_file --path 'docs/OPERATIONS.md'\n```", registry)
+        self.assertIsNone(error)
+        self.assertIsNotNone(action)
+        assert action is not None
+        self.assertEqual(action.tool_calls[0].arguments, {"path": "docs/OPERATIONS.md"})
+
     def test_interpreter_accepts_tool_mentioned_in_planning_prose(self) -> None:
         registry = create_builtin_registry(ToolConfig())
         action, error = interpret_action(
@@ -126,12 +134,24 @@ class AgentProtocolTests(unittest.TestCase):
         self.assertIsNone(action)
         self.assertIsNotNone(error)
 
+    def test_shell_verification_classifier_allows_read_only_and_chain(self) -> None:
+        self.assertTrue(_is_verification_shell_command("test -d /tmp/demo && ls -ld /tmp/demo"))
+        self.assertTrue(_is_verification_shell_command("./venv/bin/python -m unittest discover -s tests"))
+
+    def test_shell_verification_classifier_rejects_mutating_chains(self) -> None:
+        self.assertFalse(_is_verification_shell_command("ls /tmp/demo && rm -rf /tmp/demo"))
+        self.assertFalse(_is_verification_shell_command("ls /tmp/demo; rm -rf /tmp/demo"))
+        self.assertFalse(_is_verification_shell_command("cat file > copy"))
+        self.assertFalse(_is_verification_shell_command("find . -type f -delete"))
+        self.assertFalse(_is_verification_shell_command("sed -i s/old/new/ sample.txt"))
+
     def test_runner_executes_real_file_tool_and_writes_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             backend = ScriptedBackend(
                 [
                     '{"thought":"write file","tool_calls":[{"name":"write_file","arguments":{"path":"projects/demo/README.md","content":"# Demo\\n"}}],"final":null}',
+                    '{"thought":"verify file","tool_calls":[{"name":"read_file","arguments":{"path":"projects/demo/README.md"}}],"final":null}',
                     '{"thought":"verified enough","tool_calls":[],"final":"Completed\\n\\nVerification: file written by tool."}',
                 ]
             )
@@ -149,10 +169,36 @@ class AgentProtocolTests(unittest.TestCase):
                 runner.close()
             self.assertIn("Completed", report)
             self.assertEqual((workspace / "projects/demo/README.md").read_text(), "# Demo\n")
+            self.assertEqual(backend.calls, 3)
             run_dirs = list((workspace / "runs").iterdir())
             self.assertEqual(len(run_dirs), 1)
             self.assertTrue((run_dirs[0] / "events.jsonl").exists())
             self.assertTrue((run_dirs[0] / "transcript.json").exists())
+
+    def test_runner_blocks_final_report_after_unverified_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            backend = ScriptedBackend(
+                [
+                    '{"thought":"write file","tool_calls":[{"name":"write_file","arguments":{"path":"projects/demo/README.md","content":"# Demo\\n"}}],"final":null}',
+                    '{"thought":"done","tool_calls":[],"final":"Completed without checking the file."}',
+                ]
+            )
+            cfg = HarnessConfig(
+                workspace=workspace,
+                runs_dir=Path("runs"),
+                projects_dir=Path("projects"),
+                max_iterations=2,
+                tools=ToolConfig(allow_shell=False, allow_file_write=True),
+            )
+            runner = AgentRunner(cfg, backend)
+            try:
+                report = runner.run("make a demo")
+            finally:
+                runner.close()
+            self.assertIn("without a final report", report)
+            transcript = next((workspace / "runs").iterdir()) / "transcript.json"
+            self.assertIn("verification_required", transcript.read_text(encoding="utf-8"))
 
     def test_runner_emits_live_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

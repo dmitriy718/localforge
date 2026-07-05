@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import os
 import time
@@ -15,11 +16,12 @@ from localforge.backends.factory import create_backend
 from localforge.backends.ollama import OllamaBackend
 from localforge.config import HarnessConfig, load_config, write_default_config
 from localforge.agent import AgentRunner
-from localforge.audit import list_run_summaries, read_audit_events, summarize_run
-from localforge.mcp.client import McpStdioClient
+from localforge.audit import RunSummary, list_run_summaries, read_audit_events, summarize_run
+from localforge.mcp.client import McpStdioClient, _command_requires_docker_daemon, _docker_info_ok
 from localforge.models import AgentEvent
-from localforge.models import Message, Role
+from localforge.models import Message, Role, RunContext
 from localforge.setup_wizard import ensure_first_run_setup, run_setup_wizard
+from localforge.tools.builtin import PathInfoTool
 
 app = typer.Typer(help="LocalForge: local-first autonomous build harness.")
 console = Console()
@@ -70,6 +72,24 @@ def doctor(
         console.print("[green]Ollama reachable and configured model is installed.[/green]")
     else:
         console.print("[green]Backend configuration loaded. Run command will verify generation.[/green]")
+    docker_backed = [
+        server.name
+        for server in cfg.mcp_servers
+        if server.enabled and _command_requires_docker_daemon(server.command)
+    ]
+    if docker_backed:
+        if _docker_info_ok():
+            console.print(
+                "[green]Docker daemon reachable for Docker-backed MCPs:[/green] "
+                + ", ".join(docker_backed)
+            )
+        else:
+            console.print(
+                "[red]Docker daemon is not reachable for Docker-backed MCPs:[/red] "
+                + ", ".join(docker_backed)
+            )
+            console.print("Start Docker Desktop or run `localforge mcp-smoke` to trigger MCP startup preflight.")
+            raise typer.Exit(3)
 
 
 @app.command("mcp-list")
@@ -142,12 +162,16 @@ def mcp_smoke(
 def runs_command(
     config: Path | None = typer.Option(None, "--config", "-c", help="Config file."),
     limit: int = typer.Option(20, "--limit", "-n", min=1, help="Number of recent runs to show."),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
 ) -> None:
     """List recent LocalForge run audit summaries."""
     _ensure_setup_or_exit(config)
     cfg = _load_config(config)
     runs_dir = _resolve_workspace_path(cfg.workspace, cfg.runs_dir)
     summaries = list_run_summaries(runs_dir, limit=limit)
+    if json_output:
+        console.print(json.dumps([_run_summary_dict(summary) for summary in summaries], indent=2))
+        return
     table = Table(title=f"LocalForge runs: {runs_dir}")
     table.add_column("Run ID")
     table.add_column("Status")
@@ -177,6 +201,7 @@ def show_run_command(
     run_id: str = typer.Argument(..., help="Run directory name under the configured runs_dir."),
     config: Path | None = typer.Option(None, "--config", "-c", help="Config file."),
     tail: int = typer.Option(20, "--tail", "-n", min=1, help="Number of recent events to show."),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
 ) -> None:
     """Inspect one LocalForge run audit log."""
     _ensure_setup_or_exit(config)
@@ -190,6 +215,25 @@ def show_run_command(
     summary = summarize_run(run_dir)
     transcript = run_dir / "transcript.json"
     events_path = run_dir / "events.jsonl"
+    events, invalid = read_audit_events(events_path)
+    if json_output:
+        console.print(
+            json.dumps(
+                {
+                    "summary": _run_summary_dict(summary),
+                    "events_path": str(events_path),
+                    "transcript_path": str(transcript) if transcript.exists() else None,
+                    "events_tail": [
+                        {"event": item.event, "ts": item.ts, "payload": item.payload}
+                        for item in events[-tail:]
+                    ],
+                    "invalid_event_lines": invalid,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
     console.print(Panel.fit(f"Run {summary.run_id}", title="LocalForge Run"))
     table = Table(show_header=False)
     table.add_column("Field")
@@ -208,7 +252,6 @@ def show_run_command(
         table.add_row("Final preview", summary.final_preview)
     console.print(table)
 
-    events, _invalid = read_audit_events(events_path)
     if events:
         event_table = Table(title=f"Last {min(tail, len(events))} events")
         event_table.add_column("Timestamp")
@@ -226,10 +269,15 @@ def run(
     prompt: str = typer.Argument(..., help="What the local model should build."),
     config: Path | None = typer.Option(None, "--config", "-c", help="Config file."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Let tools report intended actions."),
+    allow_external_path: list[Path] = typer.Option(
+        None,
+        "--allow-external-path",
+        help="Temporarily allow a path outside the workspace for this run.",
+    ),
 ) -> None:
     """Run the autonomous local builder."""
     _ensure_setup_or_exit(config)
-    cfg = _load_config(config)
+    cfg = _with_extra_external_paths(_load_config(config), allow_external_path)
     backend = create_backend(cfg.backend)
     runner = AgentRunner(cfg, backend, event_handler=_print_event)
     try:
@@ -250,13 +298,18 @@ def chat(
     action: str | None = typer.Argument(None, help="Optional alias. Use `start` to launch chat."),
     config: Path | None = typer.Option(None, "--config", "-c", help="Config file."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Let tools report intended actions."),
+    allow_external_path: list[Path] = typer.Option(
+        None,
+        "--allow-external-path",
+        help="Temporarily allow a path outside the workspace for /run and /build turns.",
+    ),
 ) -> None:
     """Start an interactive LocalForge chat session."""
     if action is not None and action != "start":
         console.print("[red]Unknown chat action:[/red] use `localforge chat` or `localforge chat start`.")
         raise typer.Exit(2)
     _ensure_setup_or_exit(config)
-    cfg = _load_config(config)
+    cfg = _with_extra_external_paths(_load_config(config), allow_external_path)
     console.print(
         Panel.fit(
             "LocalForge Chat\n"
@@ -327,6 +380,48 @@ def chat(
         session_context.append(f"User: {agent_prompt}\nLocalForge: {report}")
 
 
+@app.command("path-info")
+def path_info_command(
+    path: str = typer.Argument(..., help="Workspace-relative, absolute, or allowlisted path to inspect."),
+    config: Path | None = typer.Option(None, "--config", "-c", help="Config file."),
+    allow_external_path: list[Path] = typer.Option(
+        None,
+        "--allow-external-path",
+        help="Temporarily allow a path outside the workspace for this check.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Verify a filesystem path with the same policy used by built-in tools."""
+    _ensure_setup_or_exit(config)
+    cfg = _with_extra_external_paths(_load_config(config), allow_external_path)
+    context = RunContext("cli-path-info", cfg.workspace.resolve(), cfg.workspace / cfg.runs_dir, False)
+    result = PathInfoTool(cfg.tools).run({"path": path}, context)
+    if json_output:
+        console.print(
+            json.dumps(
+                {
+                    "ok": result.ok,
+                    "output": result.output,
+                    "metadata": result.metadata,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+    else:
+        style = "green" if result.ok else "red"
+        console.print(f"[{style}]{result.output}[/{style}]")
+        if result.metadata:
+            table = Table(show_header=False)
+            table.add_column("Field")
+            table.add_column("Value")
+            for key, value in result.metadata.items():
+                table.add_row(str(key), str(value))
+            console.print(table)
+    if not result.ok:
+        raise typer.Exit(1)
+
+
 def _print_event(event: AgentEvent) -> None:
     timestamp = time.strftime("%H:%M:%S")
     style = {
@@ -373,6 +468,35 @@ def _load_config(config: Path | None) -> HarnessConfig:
     return load_config(_effective_config_path(config))
 
 
+def _with_extra_external_paths(cfg: HarnessConfig, paths: list[Path] | None) -> HarnessConfig:
+    if not paths:
+        return cfg
+    resolved = tuple(path.expanduser().resolve() for path in paths)
+    return replace(
+        cfg,
+        tools=replace(
+            cfg.tools,
+            allow_external_paths=cfg.tools.allow_external_paths + resolved,
+        ),
+    )
+
+
+def _run_summary_dict(summary: RunSummary) -> dict[str, object]:
+    return {
+        "run_id": summary.run_id,
+        "run_dir": str(summary.run_dir),
+        "status": summary.status,
+        "started_at": summary.started_at,
+        "completed_at": summary.completed_at,
+        "iterations": summary.iterations,
+        "tool_calls": summary.tool_calls,
+        "tool_failures": summary.tool_failures,
+        "protocol_errors": summary.protocol_errors,
+        "invalid_event_lines": summary.invalid_event_lines,
+        "final_preview": summary.final_preview,
+    }
+
+
 def _is_simple_greeting(prompt: str) -> bool:
     normalized = prompt.strip().lower().strip("!.?, ")
     return normalized in {"hi", "hello", "hey", "yo", "sup", "howdy"}
@@ -404,7 +528,10 @@ def _direct_chat_response(backend: object, session_context: list[str], prompt: s
     if context:
         messages.append(Message(Role.USER, "Recent chat context:\n" + context))
     messages.append(Message(Role.USER, prompt))
-    return backend.generate(messages).strip()
+    response = backend.generate(messages)
+    if not isinstance(response, str):
+        raise RuntimeError("Configured backend returned a non-string response")
+    return response.strip()
 
 
 def _resolve_workspace_path(workspace: Path, path: Path) -> Path:

@@ -4,6 +4,7 @@ import json
 import os
 import queue
 import re
+import shlex
 import threading
 import time
 from pathlib import Path
@@ -95,6 +96,7 @@ class AgentRunner:
 
         final_report = ""
         tool_results_seen = 0
+        mutation_needs_verification = False
         try:
             for iteration in range(1, self.config.max_iterations + 1):
                 audit.record("iteration_start", {"iteration": iteration})
@@ -110,6 +112,19 @@ class AgentRunner:
                 action, interpretation_error = interpret_action(raw_response, registry)
                 if action is None:
                     if tool_results_seen > 0 and raw_response.strip():
+                        if mutation_needs_verification:
+                            result = _verification_required_result()
+                            messages.append(Message(Role.TOOL, render_tool_result(result)))
+                            audit.record(
+                                "verification_required",
+                                {"iteration": iteration, "mode": "natural_language_final"},
+                            )
+                            self._emit(
+                                "protocol_error",
+                                f"Iteration {iteration}: final report blocked until mutation verification passes",
+                                {"iteration": iteration},
+                            )
+                            continue
                         final_report = raw_response.strip()
                         audit.record(
                             "run_final",
@@ -152,6 +167,19 @@ class AgentRunner:
                 )
 
                 if action.final is not None and not action.tool_calls:
+                    if mutation_needs_verification:
+                        result = _verification_required_result()
+                        messages.append(Message(Role.TOOL, render_tool_result(result)))
+                        audit.record(
+                            "verification_required",
+                            {"iteration": iteration, "mode": "structured_final"},
+                        )
+                        self._emit(
+                            "protocol_error",
+                            f"Iteration {iteration}: final report blocked until mutation verification passes",
+                            {"iteration": iteration},
+                        )
+                        continue
                     final_report = action.final
                     audit.record("run_final", {"iteration": iteration, "final": final_report})
                     self._emit("final", "Final report received", {"iteration": iteration})
@@ -176,9 +204,15 @@ class AgentRunner:
                     continue
 
                 for call in action.tool_calls:
+                    intent = _classify_tool_call(call)
                     audit.record(
                         "tool_call",
-                        {"iteration": iteration, "name": call.name, "arguments": call.arguments},
+                        {
+                            "iteration": iteration,
+                            "name": call.name,
+                            "arguments": call.arguments,
+                            "intent": intent,
+                        },
                     )
                     self._emit(
                         "tool_start",
@@ -199,6 +233,19 @@ class AgentRunner:
                         },
                     )
                     tool_results_seen += 1
+                    if result.ok:
+                        if intent == "mutation":
+                            mutation_needs_verification = True
+                            audit.record(
+                                "verification_pending",
+                                {"iteration": iteration, "tool": call.name},
+                            )
+                        elif intent == "verification" and mutation_needs_verification:
+                            mutation_needs_verification = False
+                            audit.record(
+                                "verification_satisfied",
+                                {"iteration": iteration, "tool": call.name},
+                            )
                     messages.append(Message(Role.TOOL, render_tool_result(result)))
             else:
                 final_report = (
@@ -493,7 +540,10 @@ def _extract_bare_tool_action(raw_response: str, registry: ToolRegistry | None) 
 
 
 def _parse_command_arguments(candidate: str) -> dict[str, Any]:
-    parts = candidate.split()
+    try:
+        parts = shlex.split(candidate)
+    except ValueError:
+        return {}
     arguments: dict[str, Any] = {}
     index = 1
     while index < len(parts):
@@ -557,6 +607,215 @@ def render_tool_result(result: ToolResult) -> str:
         indent=2,
         sort_keys=True,
     )
+
+
+def _verification_required_result() -> ToolResult:
+    return ToolResult(
+        name="agent_protocol",
+        ok=False,
+        output=(
+            "A file, directory, patch, shell, or remote MCP mutation succeeded after the last "
+            "verification step. Before giving a final success report, run a concrete verification "
+            "tool call that proves the requested postcondition, such as read_file, list_files, "
+            "path_info, or a shell check like `test -d <path> && ls -ld <path>`."
+        ),
+        metadata={"verification_required": True},
+    )
+
+
+def _classify_tool_call(call: ToolCall) -> str:
+    name = call.name.lower()
+    if name == "shell":
+        command = str(call.arguments.get("cmd", ""))
+        return "verification" if _is_verification_shell_command(command) else "mutation"
+    if name in {"read_file", "list_files", "search", "fetch_url"}:
+        return "verification"
+    if name in {"write_file", "write_json", "apply_patch", "create_directory", "path_info"}:
+        return "mutation" if name != "path_info" else "verification"
+    if name.startswith("mcp__"):
+        if any(token in name for token in _MCP_MUTATION_TOKENS):
+            return "mutation"
+        if any(token in name for token in _MCP_VERIFICATION_TOKENS):
+            return "verification"
+    return "other"
+
+
+_MCP_MUTATION_TOKENS = (
+    "__write",
+    "__edit",
+    "__create",
+    "__move",
+    "__delete",
+    "__remove",
+    "__rename",
+    "__execute",
+    "__run",
+    "__apply",
+    "__update",
+    "__insert",
+    "__deploy",
+)
+
+_MCP_VERIFICATION_TOKENS = (
+    "__read",
+    "__list",
+    "__search",
+    "__get",
+    "__stat",
+    "__info",
+    "__tree",
+    "__query",
+    "__audit",
+)
+
+
+def _is_verification_shell_command(command: str) -> bool:
+    normalized = command.strip()
+    if not normalized:
+        return False
+    if _contains_forbidden_shell_operator(normalized):
+        return False
+    segments = _split_shell_and_chain(normalized)
+    if not segments:
+        return False
+    return all(_is_verification_shell_segment(segment) for segment in segments)
+
+
+def _is_verification_shell_segment(segment: str) -> bool:
+    normalized = segment.strip()
+    if not normalized:
+        return False
+    try:
+        parts = shlex.split(normalized)
+    except ValueError:
+        return False
+    if not parts:
+        return False
+    read_only_commands = {
+        "cat",
+        "find",
+        "grep",
+        "ls",
+        "pwd",
+        "rg",
+        "sed",
+        "stat",
+        "test",
+        "wc",
+    }
+    if parts[0] in read_only_commands:
+        return not _read_only_command_has_mutating_flags(parts)
+    if normalized.startswith(("[ ", "[[ ")):
+        return True
+    verification_phrases = (
+        "npm test",
+        "npm run build",
+        "npm run lint",
+        "npm run typecheck",
+        "pnpm test",
+        "pnpm build",
+        "pnpm lint",
+        "pnpm typecheck",
+        "pytest",
+        "ruff check",
+        "mypy",
+        "cargo test",
+        "cargo clippy",
+        "go test",
+        "go vet",
+        "docker compose config",
+        "python -m unittest",
+        "python -m compileall",
+        "./venv/bin/python -m unittest",
+        "./venv/bin/python -m compileall",
+    )
+    return normalized.startswith(verification_phrases)
+
+
+def _read_only_command_has_mutating_flags(parts: list[str]) -> bool:
+    command = parts[0]
+    flags = set(parts[1:])
+    if command == "find":
+        return any(flag in flags for flag in {"-delete", "-exec", "-execdir", "-ok", "-okdir"})
+    if command == "sed":
+        return any(flag == "-i" or flag.startswith("-i") for flag in parts[1:])
+    return False
+
+
+def _contains_forbidden_shell_operator(command: str) -> bool:
+    in_single = False
+    in_double = False
+    escaped = False
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if char == "\\":
+            escaped = True
+            index += 1
+            continue
+        if char == "'" and not in_double:
+            in_single = not in_single
+            index += 1
+            continue
+        if char == '"' and not in_single:
+            in_double = not in_double
+            index += 1
+            continue
+        if in_single or in_double:
+            index += 1
+            continue
+        if char in {";", "|"}:
+            return True
+        if char == "&":
+            if command.startswith("&&", index):
+                index += 2
+                continue
+            return True
+        if char in {"<", ">"}:
+            return True
+        if command.startswith("||", index):
+            return True
+        index += 1
+    return False
+
+
+def _split_shell_and_chain(command: str) -> list[str]:
+    segments: list[str] = []
+    in_single = False
+    in_double = False
+    escaped = False
+    start = 0
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if char == "\\":
+            escaped = True
+            index += 1
+            continue
+        if char == "'" and not in_double:
+            in_single = not in_single
+            index += 1
+            continue
+        if char == '"' and not in_single:
+            in_double = not in_double
+            index += 1
+            continue
+        if not in_single and not in_double and command.startswith("&&", index):
+            segments.append(command[start:index].strip())
+            index += 2
+            start = index
+            continue
+        index += 1
+    segments.append(command[start:].strip())
+    return [segment for segment in segments if segment]
 
 
 def _render_tool_specs(registry: ToolRegistry) -> str:

@@ -146,7 +146,7 @@ def read_audit_events(path: Path) -> tuple[list[AuditEvent], int]:
 
 
 def _jsonable(value: Any) -> Any:
-    if is_dataclass(value):
+    if is_dataclass(value) and not isinstance(value, type):
         return _jsonable(asdict(value))
     if isinstance(value, Path):
         return str(value)

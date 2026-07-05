@@ -34,9 +34,10 @@ class OllamaBackend(ModelBackend):
                 raise RuntimeError(f"Ollama chat request failed: {response.text}") from exc
             data = response.json()
         message = data.get("message")
-        if not isinstance(message, dict) or not isinstance(message.get("content"), str):
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, str):
             raise RuntimeError(f"Unexpected Ollama response shape: {data!r}")
-        return message["content"]
+        return content
 
     def _generate_fallback(self, client: httpx.Client, messages: list[Message]) -> str:
         payload = {
