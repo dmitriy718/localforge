@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import os
+import shlex
 import shutil
+import socket
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -37,11 +41,66 @@ def _truncate(text: str, max_chars: int) -> str:
     return text[:max_chars] + f"\n...[truncated {len(text) - max_chars} chars]"
 
 
-def _resolve_workspace_path(workspace: Path, requested: str) -> Path:
-    path = Path(requested)
+def _resolve_workspace_path(workspace: Path, requested: str, config: ToolConfig) -> Path:
+    path = Path(requested).expanduser()
     if not path.is_absolute():
         path = workspace / path
-    return path.resolve()
+    resolved = path.resolve()
+    if not _path_is_allowed(workspace, resolved, config):
+        allowed = ", ".join(str(path) for path in config.allow_external_paths) or "none"
+        raise ValueError(
+            f"Path resolves outside the workspace and is not allowlisted: {resolved}. "
+            f"Workspace: {workspace}. Allowed external paths: {allowed}."
+        )
+    return resolved
+
+
+def _path_is_allowed(workspace: Path, path: Path, config: ToolConfig) -> bool:
+    workspace = workspace.resolve()
+    if path == workspace or workspace in path.parents:
+        return True
+    for allowed in config.allow_external_paths:
+        allowed_resolved = allowed.expanduser().resolve()
+        if path == allowed_resolved or allowed_resolved in path.parents:
+            return True
+    return False
+
+
+def _disallowed_shell_path(command: str, workspace: Path, config: ToolConfig) -> Path | None:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return None
+    for token in tokens:
+        if "://" in token:
+            continue
+        path_candidate = _shell_token_path(token)
+        if path_candidate is None:
+            continue
+        path = path_candidate.expanduser()
+        if not path.is_absolute():
+            path = workspace / path
+        resolved = path.resolve()
+        if not _path_is_allowed(workspace, resolved, config):
+            return resolved
+    return None
+
+
+def _shell_token_path(token: str) -> Path | None:
+    if token.startswith("-") or "=" in token:
+        return None
+    if token.startswith(("/", "~/", "$HOME/", "../")) or token in {".."}:
+        return Path(token.replace("$HOME", "~", 1))
+    return None
+
+
+def _display_path(workspace: Path, path: Path) -> str:
+    resolved_workspace = workspace.resolve()
+    resolved_path = path.resolve()
+    try:
+        return str(resolved_path.relative_to(resolved_workspace))
+    except ValueError:
+        return str(resolved_path)
 
 
 class ShellTool(Tool):
@@ -71,7 +130,24 @@ class ShellTool(Tool):
             return ToolResult("shell", False, "Shell execution is disabled by config.")
         command = _string_arg(arguments, "cmd")
         cwd_raw = arguments.get("cwd")
-        cwd = context.workspace if cwd_raw is None else _resolve_workspace_path(context.workspace, str(cwd_raw))
+        try:
+            cwd = (
+                context.workspace
+                if cwd_raw is None
+                else _resolve_workspace_path(context.workspace, str(cwd_raw), self.config)
+            )
+        except ValueError as exc:
+            return ToolResult("shell", False, str(exc))
+        disallowed = _disallowed_shell_path(command, context.workspace, self.config)
+        if disallowed is not None:
+            return ToolResult(
+                "shell",
+                False,
+                (
+                    f"Shell command references a path outside the workspace that is not allowlisted: "
+                    f"{disallowed}"
+                ),
+            )
         if context.dry_run:
             return ToolResult("shell", True, f"DRY RUN: would execute in {cwd}: {command}")
         completed = subprocess.run(
@@ -113,7 +189,12 @@ class ReadFileTool(Tool):
         )
 
     def run(self, arguments: dict[str, object], context: RunContext) -> ToolResult:
-        path = _resolve_workspace_path(context.workspace, _string_arg(arguments, "path"))
+        try:
+            path = _resolve_workspace_path(
+                context.workspace, _string_arg(arguments, "path"), self.config
+            )
+        except ValueError as exc:
+            return ToolResult("read_file", False, str(exc))
         try:
             content = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
@@ -153,7 +234,12 @@ class WriteFileTool(Tool):
     def run(self, arguments: dict[str, object], context: RunContext) -> ToolResult:
         if not self.config.allow_file_write:
             return ToolResult("write_file", False, "File writing is disabled by config.")
-        path = _resolve_workspace_path(context.workspace, _string_arg(arguments, "path"))
+        try:
+            path = _resolve_workspace_path(
+                context.workspace, _string_arg(arguments, "path"), self.config
+            )
+        except ValueError as exc:
+            return ToolResult("write_file", False, str(exc))
         content = _string_arg(arguments, "content", default="", allow_empty=True)
         if context.dry_run:
             return ToolResult("write_file", True, f"DRY RUN: would write {len(content)} chars to {path}")
@@ -171,6 +257,14 @@ class WriteFileTool(Tool):
                     counter += 1
                 shutil.copy2(path, backup_path)
             path.write_text(content, encoding="utf-8")
+            if not path.is_file():
+                return ToolResult("write_file", False, f"Write verification failed; file is missing: {path}")
+            if path.read_text(encoding="utf-8") != content:
+                return ToolResult(
+                    "write_file",
+                    False,
+                    f"Write verification failed; file content did not match requested content: {path}",
+                )
         except OSError as exc:
             return ToolResult("write_file", False, f"Failed to write {path}: {exc}")
         metadata: dict[str, Any] = {"path": str(path), "chars": len(content)}
@@ -179,7 +273,120 @@ class WriteFileTool(Tool):
         return ToolResult("write_file", True, f"Wrote {len(content)} chars to {path}", metadata)
 
 
+class CreateDirectoryTool(Tool):
+    def __init__(self, config: ToolConfig) -> None:
+        self.config = config
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="create_directory",
+            description=(
+                "Create a directory idempotently, including parents, then verify that the path "
+                "exists and is a directory."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+        )
+
+    def run(self, arguments: dict[str, object], context: RunContext) -> ToolResult:
+        if not self.config.allow_file_write:
+            return ToolResult("create_directory", False, "Directory creation is disabled by config.")
+        try:
+            path = _resolve_workspace_path(
+                context.workspace, _string_arg(arguments, "path"), self.config
+            )
+        except ValueError as exc:
+            return ToolResult("create_directory", False, str(exc))
+        existed_before = path.exists()
+        if context.dry_run:
+            return ToolResult("create_directory", True, f"DRY RUN: would create directory {path}")
+        try:
+            if existed_before and not path.is_dir():
+                return ToolResult(
+                    "create_directory",
+                    False,
+                    f"Path exists but is not a directory: {path}",
+                    {"path": str(path), "exists": True, "is_dir": False},
+                )
+            path.mkdir(parents=True, exist_ok=True)
+            if not path.is_dir():
+                return ToolResult(
+                    "create_directory",
+                    False,
+                    f"Directory verification failed after create: {path}",
+                    {"path": str(path), "exists": path.exists(), "is_dir": path.is_dir()},
+                )
+        except OSError as exc:
+            return ToolResult("create_directory", False, f"Failed to create directory {path}: {exc}")
+        return ToolResult(
+            "create_directory",
+            True,
+            f"Directory {'already existed' if existed_before else 'created'}: {path}",
+            {"path": str(path), "exists": True, "is_dir": True, "existed_before": existed_before},
+        )
+
+
+class PathInfoTool(Tool):
+    def __init__(self, config: ToolConfig) -> None:
+        self.config = config
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="path_info",
+            description=(
+                "Verify whether a path exists and return file/directory metadata. Use this after "
+                "creating files or directories before reporting success."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+        )
+
+    def run(self, arguments: dict[str, object], context: RunContext) -> ToolResult:
+        try:
+            path = _resolve_workspace_path(
+                context.workspace, _string_arg(arguments, "path"), self.config
+            )
+        except ValueError as exc:
+            return ToolResult("path_info", False, str(exc))
+        exists = path.exists()
+        metadata: dict[str, Any] = {
+            "path": str(path),
+            "exists": exists,
+            "is_file": path.is_file(),
+            "is_dir": path.is_dir(),
+        }
+        if exists:
+            try:
+                stat = path.stat()
+            except OSError as exc:
+                return ToolResult("path_info", False, f"Failed to stat {path}: {exc}", metadata)
+            metadata.update(
+                {
+                    "size": stat.st_size,
+                    "mode": oct(stat.st_mode & 0o777),
+                    "mtime": stat.st_mtime,
+                }
+            )
+        return ToolResult(
+            "path_info",
+            exists,
+            f"{path}: {'exists' if exists else 'does not exist'}",
+            metadata,
+        )
+
+
 class ListFilesTool(Tool):
+    def __init__(self, config: ToolConfig) -> None:
+        self.config = config
+
     @property
     def spec(self) -> ToolSpec:
         return ToolSpec(
@@ -195,7 +402,12 @@ class ListFilesTool(Tool):
         )
 
     def run(self, arguments: dict[str, object], context: RunContext) -> ToolResult:
-        root = _resolve_workspace_path(context.workspace, str(arguments.get("path", ".")))
+        try:
+            root = _resolve_workspace_path(
+                context.workspace, str(arguments.get("path", ".")), self.config
+            )
+        except ValueError as exc:
+            return ToolResult("list_files", False, str(exc))
         max_files_raw = arguments.get("max_files", 300)
         max_files = int(max_files_raw) if isinstance(max_files_raw, int | float | str) else 300
         ignored = {".git", "node_modules", ".venv", "venv", "__pycache__", ".pytest_cache"}
@@ -204,7 +416,7 @@ class ListFilesTool(Tool):
             for current, dirnames, filenames in os.walk(root):
                 dirnames[:] = [name for name in dirnames if name not in ignored]
                 for filename in sorted(filenames):
-                    files.append(str((Path(current) / filename).relative_to(context.workspace)))
+                    files.append(_display_path(context.workspace, Path(current) / filename))
                     if len(files) >= max_files:
                         return ToolResult("list_files", True, "\n".join(files), {"truncated": True})
         except OSError as exc:
@@ -233,7 +445,12 @@ class SearchTool(Tool):
 
     def run(self, arguments: dict[str, object], context: RunContext) -> ToolResult:
         pattern = _string_arg(arguments, "pattern")
-        path = _resolve_workspace_path(context.workspace, str(arguments.get("path", ".")))
+        try:
+            path = _resolve_workspace_path(
+                context.workspace, str(arguments.get("path", ".")), self.config
+            )
+        except ValueError as exc:
+            return ToolResult("search", False, str(exc))
         if shutil.which("rg"):
             completed = subprocess.run(
                 ["rg", "--line-number", "--hidden", "-g", "!venv", "-g", "!node_modules", pattern, str(path)],
@@ -282,9 +499,25 @@ class FetchUrlTool(Tool):
         if not self.config.allow_network_fetch:
             return ToolResult("fetch_url", False, "Network fetch is disabled by config.")
         url = _string_arg(arguments, "url")
+        validation_error = _validate_fetch_url(url, self.config)
+        if validation_error:
+            return ToolResult("fetch_url", False, validation_error)
         try:
-            with httpx.Client(timeout=30, follow_redirects=True) as client:
+            with httpx.Client(timeout=30, follow_redirects=False) as client:
                 response = client.get(url)
+                redirect_count = 0
+                while response.is_redirect:
+                    redirect_url = response.headers.get("location")
+                    if not redirect_url:
+                        return ToolResult("fetch_url", False, "HTTP redirect response omitted Location header.")
+                    next_url = str(response.url.join(redirect_url))
+                    validation_error = _validate_fetch_url(next_url, self.config)
+                    if validation_error:
+                        return ToolResult("fetch_url", False, validation_error)
+                    redirect_count += 1
+                    if redirect_count > 5:
+                        return ToolResult("fetch_url", False, "HTTP redirect limit exceeded.")
+                    response = client.get(next_url)
                 response.raise_for_status()
                 text = response.text
         except httpx.HTTPError as exc:
@@ -321,6 +554,49 @@ class WriteJsonTool(Tool):
         return WriteFileTool(self.config).run(
             {"path": _string_arg(arguments, "path"), "content": content}, context
         )
+
+
+def _validate_fetch_url(url: str, config: ToolConfig) -> str | None:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        return "Only http:// and https:// URLs are supported."
+    if not parsed.hostname:
+        return "URL must include a hostname."
+    if config.allow_private_network_fetch:
+        return None
+    try:
+        addresses = _resolve_host_addresses(parsed.hostname, parsed.port)
+    except OSError as exc:
+        return f"Could not resolve URL hostname {parsed.hostname}: {exc}"
+    for address in addresses:
+        if _is_private_or_local_address(address):
+            return (
+                f"Network fetch to private, local, link-local, reserved, or multicast address "
+                f"is blocked by default: {parsed.hostname} resolved to {address}."
+            )
+    return None
+
+
+def _resolve_host_addresses(hostname: str, port: int | None) -> set[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    infos = socket.getaddrinfo(hostname, port or 443, type=socket.SOCK_STREAM)
+    addresses: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
+    for family, _type, _proto, _canonname, sockaddr in infos:
+        if family not in {socket.AF_INET, socket.AF_INET6}:
+            continue
+        raw_address = sockaddr[0]
+        addresses.add(ipaddress.ip_address(raw_address))
+    return addresses
+
+
+def _is_private_or_local_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_multicast
+        or address.is_unspecified
+    )
 
 
 class ApplyPatchTool(Tool):
@@ -406,8 +682,10 @@ def create_builtin_registry(config: ToolConfig) -> ToolRegistry:
     registry.register(ReadFileTool(config))
     registry.register(WriteFileTool(config))
     registry.register(WriteJsonTool(config))
+    registry.register(CreateDirectoryTool(config))
+    registry.register(PathInfoTool(config))
     registry.register(ApplyPatchTool(config))
-    registry.register(ListFilesTool())
+    registry.register(ListFilesTool(config))
     registry.register(SearchTool(config))
     registry.register(FetchUrlTool(config))
     return registry

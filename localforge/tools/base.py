@@ -33,5 +33,12 @@ class ToolRegistry:
         tool = self._tools.get(name)
         if tool is None:
             return ToolResult(name=name, ok=False, output=f"Unknown tool: {name}")
-        return tool.run(arguments, context)
-
+        try:
+            return tool.run(arguments, context)
+        except Exception as exc:
+            return ToolResult(
+                name=name,
+                ok=False,
+                output=f"Tool {name} failed with an unexpected error: {type(exc).__name__}: {exc}",
+                metadata={"exception_type": type(exc).__name__},
+            )
